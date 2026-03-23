@@ -1,0 +1,15 @@
+---
+purpose: Collected external references, research, and third-party documentation.
+summary: Directory for sources collected via the source-collector skill. Add external articles, docs, and research here.
+audience: ["agents", "implementers"]
+related: []
+content_stage: stable
+version: 1.0.0
+last_updated: 2026-03-23
+tags: ["sources", "references", "external-docs"]
+---
+
+# Sources Directory
+
+> Collected external references, research, and third-party documentation.
+> Use the `source-collector` skill to download, summarize, and add sources.

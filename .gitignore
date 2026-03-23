@@ -1,0 +1,25 @@
+results/
+# Framework / agentic tooling (local only)
+CLAUDE.md
+STATE.md
+FRAMEWORK_BASELINE.md
+BACKLOG.md
+events.jsonl
+workflow.yaml
+.shared/
+.claude/
+.cursor/
+spec/
+prompts/
+HUMAN_GUIDE.md
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+data/
+*.egg-info/
+.eggs/
+dist/
+build/
+*.log
+.env
