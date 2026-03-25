@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+import schedulefree
 
 from src.models.pointnet_cls import get_model, get_loss
 from src.data_utils.ModelNetDatDataset import ModelNetDatDataset
@@ -49,7 +50,7 @@ def main():
 
     model = get_model(k=args.num_category, normal_channel=True).to(device)
     criterion = get_loss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = schedulefree.AdamWScheduleFree(model.parameters(), lr=args.lr)
 
     # Hook to capture the 3×3 input STN output (trans) for determinant logging
     stn_output = {}
@@ -68,6 +69,7 @@ def main():
         total_loss, correct, total = 0.0, 0, 0
         det_list = []
 
+        optimizer.train()
         for points, labels in train_loader:
             points = points.transpose(2, 1).float().to(device)
             labels = labels.long().to(device)
@@ -90,6 +92,7 @@ def main():
         train_loss = total_loss / total
         train_acc = correct / total
 
+        optimizer.eval()
         test_loss, test_acc = evaluate(model, test_loader, criterion, device)
 
         writer.add_scalar("train/loss", train_loss, epoch)
