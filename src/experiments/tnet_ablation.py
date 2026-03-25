@@ -10,9 +10,12 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
+import copy
 import torch
 import torch.nn as nn
 import numpy as np
+import matplotlib.pyplot as plt
+from torch.utils.data import DataLoader
 
 
 # ---------------------------------------------------------------------------
@@ -29,8 +32,6 @@ class IdentitySTN3d(nn.Module):
 
 def ablate_tnet(model: nn.Module) -> nn.Module:
     """Replace STN3d inside a PointNet model with IdentitySTN3d in-place."""
-    from src.models.pointnet_utils import PointNetEncoder
-
     for module in model.modules():
         # PointNetEncoder holds stn (STN3d) as first submodule
         if hasattr(module, "stn"):
@@ -42,41 +43,52 @@ def ablate_tnet(model: nn.Module) -> nn.Module:
 # Accuracy evaluation
 # ---------------------------------------------------------------------------
 
-def evaluate(model: nn.Module, point_clouds: torch.Tensor, labels: torch.Tensor) -> float:
-    """Return accuracy (0–1) for a batch of point clouds."""
+def evaluate(model: nn.Module, loader: DataLoader) -> float:
+    """Return accuracy (0–1) over a DataLoader."""
     model.eval()
+    correct = total = 0
     with torch.no_grad():
-        logits, _ = model(point_clouds)
-        preds = logits.argmax(dim=1)
-    return (preds == labels).float().mean().item()
+        for pts, labels in loader:
+            # pts: (B, N, C) → transpose to (B, C, N) for PointNet
+            pts = pts.transpose(2, 1)
+            logits, _ = model(pts)
+            preds = logits.argmax(dim=1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+    return correct / total
 
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
-    n_samples = 50
-    checkpoint_path = "checkpoints/pointnet2_ssg/best_model.pth"
+    checkpoint_path = "checkpoints/pointnet_cls/best_model.pth"
+    dat_path = "data/modelnet40_test_1024pts.dat"
+    results_dir = "results/exp_2_tnet_ablation"
+    plot_path = os.path.join(results_dir, "plot.png")
 
     from src.models.pointnet_cls import get_model
+    from src.data_utils.ModelNetDatDataset import ModelNetDatDataset
 
-    # Load original model
-    original = get_model(40, normal_channel=False)
-    original.eval()
+    # Load original model (normal_channel=True matches the training checkpoint)
+    original = get_model(40, normal_channel=True)
     state = torch.load(checkpoint_path, map_location="cpu")
-    original.load_state_dict(state["model_state_dict"])
+    # Checkpoint saved as raw state dict (no wrapper keys)
+    original.load_state_dict(state)
+    original.eval()
 
     # Load ablated copy
-    import copy
     ablated = copy.deepcopy(original)
     ablate_tnet(ablated)
     ablated.eval()
 
-    # Synthetic point clouds (replace with real ModelNet40 test loader)
-    rng = np.random.default_rng(0)
-    pts = rng.standard_normal((n_samples, 3, 1024)).astype(np.float32)
-    labels = torch.randint(0, 40, (n_samples,))
-    clouds = torch.from_numpy(pts)
+    # Full ModelNet40 test set
+    dataset = ModelNetDatDataset(dat_path, npoints=1024, use_normals=True)
+    loader = DataLoader(dataset, batch_size=64, shuffle=False)
 
-    acc_orig = evaluate(original, clouds, labels)
-    acc_abl = evaluate(ablated, clouds, labels)
+    acc_orig = evaluate(original, loader)
+    acc_abl = evaluate(ablated, loader)
     drop = acc_orig - acc_abl
 
     print("\nT-Net Ablation Results")
@@ -85,7 +97,25 @@ def main():
     print(f"  Ablated   : {acc_abl * 100:.1f}%")
     print(f"  Drop      : {drop * 100:.1f}%")
     print("=" * 40)
-    print("(Run with real ModelNet40 test data for meaningful numbers)")
+
+    # Bar chart
+    os.makedirs(results_dir, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(5, 4))
+    bars = ax.bar(["Original", "T-Net ablated"], [acc_orig * 100, acc_abl * 100],
+                  color=["steelblue", "salmon"], width=0.5)
+    ax.set_ylabel("Accuracy (%)")
+    ax.set_ylim(0, 100)
+    n_total = len(dataset)
+    ax.set_title(f"T-Net Ablation — n={n_total} ModelNet40 test samples")
+    for bar, val in zip(bars, [acc_orig, acc_abl]):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1,
+                f"{val * 100:.1f}%", ha="center", va="bottom", fontsize=11)
+    ax.annotate(f"Drop: {drop * 100:.1f}%", xy=(0.5, 0.5), xycoords="axes fraction",
+                ha="center", fontsize=10, color="dimgray")
+    plt.tight_layout()
+    plt.savefig(plot_path, dpi=150)
+    plt.close()
+    print(f"\nPlot saved → {plot_path}")
 
 
 if __name__ == "__main__":
