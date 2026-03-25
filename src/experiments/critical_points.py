@@ -33,13 +33,13 @@ def extract_critical_points(model: torch.nn.Module, point_cloud: torch.Tensor) -
     captured = {}
 
     def hook(module, input, output):
-        # input[0]: (1, 1024, N) pre-pool feature map
-        captured["pre_pool"] = input[0].detach()
+        # output: (1, 1024, N) — bn3 output is the exact pre-pool feature map
+        # (PointNetEncoder forward: x = self.bn3(self.conv3(x)); x = torch.max(x, 2))
+        captured["pre_pool"] = output.detach()
 
-    # Register hook on the global max-pool (torch.max in forward)
-    # PointNet's get_model forward: feat = torch.max(x, 2, keepdim=True)[0]
-    # We hook the last conv layer before max-pool instead.
-    handle = model.feat.conv3.register_forward_hook(hook)
+    # Hook bn3 (not conv3) to get the full bn3(conv3(x)) output, shape (1, 1024, N).
+    # Hooking conv3's input[0] would give (1, 128, N) — wrong dimension.
+    handle = model.feat.bn3.register_forward_hook(hook)
 
     with torch.no_grad():
         model(point_cloud)
@@ -90,38 +90,77 @@ def visualize_critical_points(
 
 
 def main():
-    """Load pretrained PointNet2-SSG, run on 5 samples per class (10 classes), save figures."""
-    import importlib
+    """Load trained PointNet v1, run critical point extraction on real ModelNet40 test samples,
+    save a single grid plot to results/exp_1_critical_points/plot.png."""
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+    from src.data_utils.ModelNetDatDataset import ModelNetDatDataset
 
-    checkpoint_path = "checkpoints/pointnet2_ssg/best_model.pth"
-    results_dir = "results/critical_points"
-    n_samples_per_class = 5
-    n_classes = 10
+    checkpoint_path = "checkpoints/pointnet_cls/best_model.pth"
+    dat_path = "data/modelnet40_test_1024pts.dat"
+    results_dir = "results/exp_1_critical_points"
+    plot_path = os.path.join(results_dir, "plot.png")
+
+    # Classes chosen to stress-test the hypothesis: structural variety
+    # (thin structures, flat planes, curved surfaces, legs/edges)
+    # Two lamp samples to compare variation within the same class.
+    plot_items = [
+        (0,  "airplane",  0),  # (class_idx, label, sample_rank)
+        (8,  "chair",     0),
+        (17, "guitar",    0),
+        (19, "lamp",      0),
+        (33, "table",     0),
+        (19, "lamp",      1),  # second lamp
+    ]
+    n_cols = 3
+    n_rows = 2  # 6 panels in a 2×3 grid
 
     print(f"Loading checkpoint: {checkpoint_path}")
-    classifier = get_model(40, normal_channel=False)
+    classifier = get_model(40, normal_channel=True)
+    classifier.load_state_dict(torch.load(checkpoint_path, map_location="cpu"))
     classifier.eval()
 
-    state = torch.load(checkpoint_path, map_location="cpu")
-    classifier.load_state_dict(state["model_state_dict"])
+    print(f"Loading test data: {dat_path}")
+    dataset = ModelNetDatDataset(dat_path, npoints=1024, use_normals=True)
 
-    # Generate synthetic point clouds (replace with real ModelNet40 data loader)
-    rng = np.random.default_rng(42)
-    class_names = [f"class_{i:02d}" for i in range(n_classes)]
+    # Collect up to 2 samples per class
+    needed = {}  # cls_idx → how many samples needed
+    for cls_idx, _, _ in plot_items:
+        needed[cls_idx] = needed.get(cls_idx, 0) + 1
 
-    for cls_idx, cls_name in enumerate(class_names):
-        for sample_idx in range(n_samples_per_class):
-            pts = rng.standard_normal((1024, 3)).astype(np.float32)
-            pts /= np.linalg.norm(pts, axis=1, keepdims=True) + 1e-8  # normalize to unit sphere
+    collected = {}  # cls_idx → list of (pts_xyz, cloud_tensor)
+    for pts_tensor, label in dataset:
+        if label in needed and len(collected.get(label, [])) < needed[label]:
+            pts_xyz = pts_tensor[:, :3].numpy()
+            cloud_tensor = pts_tensor.T.unsqueeze(0)
+            collected.setdefault(label, []).append((pts_xyz, cloud_tensor))
+        if all(len(collected.get(c, [])) >= n for c, n in needed.items()):
+            break
 
-            cloud_tensor = torch.from_numpy(pts.T).unsqueeze(0)  # (1, 3, N)
-            critical_idx = extract_critical_points(classifier, cloud_tensor)
+    os.makedirs(results_dir, exist_ok=True)
 
-            save_path = os.path.join(results_dir, f"{cls_name}_sample{sample_idx:02d}.png")
-            visualize_critical_points(pts, critical_idx, label=cls_name, save_path=save_path)
-            print(f"  {cls_name} sample {sample_idx}: {len(critical_idx)} critical pts → {save_path}")
+    fig = plt.figure(figsize=(n_cols * 4, n_rows * 4))
+    for plot_idx, (cls_idx, cls_name, sample_rank) in enumerate(plot_items, start=1):
+        pts_xyz, cloud_tensor = collected[cls_idx][sample_rank]
+        critical_idx = extract_critical_points(classifier, cloud_tensor)
+        n_critical = len(critical_idx)
+        suffix = f" #{sample_rank + 1}" if needed[cls_idx] > 1 else ""
+        print(f"  {cls_name}{suffix}: {n_critical} critical / 1024 points")
 
-    print("Done.")
+        ax = fig.add_subplot(n_rows, n_cols, plot_idx, projection="3d")
+        mask = np.zeros(len(pts_xyz), dtype=bool)
+        mask[critical_idx.numpy()] = True
+        ax.scatter(*pts_xyz[~mask].T, s=1, c="dimgray", alpha=0.5)
+        ax.scatter(*pts_xyz[mask].T, s=6, c="red", alpha=0.9)
+        ax.set_title(f"{cls_name}{suffix}\n{n_critical} critical / 1024", fontsize=9)
+        ax.set_box_aspect([1, 1, 1])
+        ax.axis("off")
+
+    fig.suptitle("PointNet v1 — Critical Point Sets (ModelNet40 test)", fontsize=12)
+    plt.tight_layout()
+    plt.savefig(plot_path, dpi=150)
+    plt.close()
+    print(f"\nPlot saved → {plot_path}")
 
 
 if __name__ == "__main__":
