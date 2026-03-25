@@ -1,4 +1,3 @@
-results/
 # Framework / agentic tooling (local only)
 CLAUDE.md
 STATE.md
@@ -17,6 +16,7 @@ __pycache__/
 *.pyo
 .DS_Store
 data/
+checkpoints/
 *.egg-info/
 .eggs/
 dist/
