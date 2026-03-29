@@ -1,4 +1,4 @@
-# 3D Point Cloud Architectures: A One-Day Experiment
+# Experiments with 3D Point Cloud Architectures
 
 ## What I set out to understand
 
